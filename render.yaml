@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: vttu-realtime-hub
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_KEY
+        value: vttu_key_2026
+      - key: INTERNAL_SECRET
+        value: 13467902
+      - key: STUDY_API_URL
+        value: https://study.vttu.edu.vn
+      - key: GRACE_SECONDS
+        value: 8
+      - key: CORS_ORIGIN
+        value: "*"
