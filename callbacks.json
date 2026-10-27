@@ -1,0 +1,8 @@
+{
+  "study": {
+    "STUDY_TAG": "study",
+    // "STUDY_CALLBACK": "https://study.vttu.edu.vn/wss/callback"
+    "STUDY_CALLBACK": "http://localhost:8000/wss/callback",
+    "GRACE_SECONDS": 8
+  }
+}
