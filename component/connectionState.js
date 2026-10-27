@@ -44,6 +44,9 @@ function getOnlineUsersList(filterTag = null) {
             };
         }
 
+        const lastActiveTime = info.last_active_at ? new Date(info.last_active_at).getTime() : (info.connected_at ? new Date(info.connected_at).getTime() : Date.now());
+        const inactiveSeconds = Math.max(0, Math.floor((Date.now() - lastActiveTime) / 1000));
+
         result.push({
             id: info.id,
             tag: info.tag || tag,
@@ -56,7 +59,9 @@ function getOnlineUsersList(filterTag = null) {
             page_param: info.page_param || '',
             full_page: info.full_page || (info.page || '/'),
             active_tabs: sockets ? sockets.size : 1,
-            connected_at: info.connected_at || null
+            connected_at: info.connected_at || null,
+            last_active_at: info.last_active_at || info.connected_at || new Date().toISOString(),
+            inactive_seconds: inactiveSeconds
         });
     }
 

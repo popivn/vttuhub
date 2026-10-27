@@ -88,7 +88,8 @@ function initWebSocket(server, io, config) {
             page: currentPage,
             page_param: currentParam,
             full_page: fullPage,
-            connected_at: existing?.connected_at || new Date().toISOString()
+            connected_at: existing?.connected_at || new Date().toISOString(),
+            last_active_at: new Date().toISOString()
         });
 
         const activeTabsCount = userConnections.get(userId).size;
@@ -130,14 +131,41 @@ function initWebSocket(server, io, config) {
         ws.on('message', async (message) => {
             try {
                 const data = JSON.parse(message.toString());
-                if (data && data.type === 'ping') {
-                    const currentTabs = userConnections.get(userId)?.size || 1;
-                    ws.send(JSON.stringify({
-                        type: 'pong',
-                        user_id: userId,
-                        active_tabs: currentTabs,
-                        timestamp: new Date().toISOString()
-                    }));
+                if (data && (data.type === 'ping' || data.type === 'activity')) {
+                    const uInfo = userInfoCache.get(userId);
+                    if (uInfo) {
+                        if (data.last_active_at) {
+                            uInfo.last_active_at = data.last_active_at;
+                        } else if (typeof data.inactive_seconds === 'number') {
+                            uInfo.last_active_at = new Date(Date.now() - (data.inactive_seconds * 1000)).toISOString();
+                        } else {
+                            uInfo.last_active_at = new Date().toISOString();
+                        }
+                    }
+
+                    if (data.type === 'activity') {
+                        // Phát thông báo user_activity tức thì cho toàn bộ các client / dashboard
+                        const actPayload = JSON.stringify({
+                            type: 'user_activity',
+                            user_id: userId,
+                            last_active_at: uInfo ? uInfo.last_active_at : new Date().toISOString()
+                        });
+                        for (const [s] of connections) {
+                            if (s.readyState === 1 /* WebSocket.OPEN */) {
+                                try { s.send(actPayload); } catch (e) {}
+                            }
+                        }
+                    }
+
+                    if (data.type === 'ping') {
+                        const currentTabs = userConnections.get(userId)?.size || 1;
+                        ws.send(JSON.stringify({
+                            type: 'pong',
+                            user_id: userId,
+                            active_tabs: currentTabs,
+                            timestamp: new Date().toISOString()
+                        }));
+                    }
                 } else if (data && data.type === 'navigate') {
                     // Hỗ trợ SPA Router: chuyển trang không reload
                     const newPage = data.page || '/';
