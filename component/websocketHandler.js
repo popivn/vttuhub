@@ -287,6 +287,50 @@ function initWebSocket(server, io, config) {
                             disconnected_at: new Date().toISOString()
                         }, inactRawId, internalSecret);
                     }
+                } else if (data && data.type === 'logout') {
+                    console.log(`[${new Date().toLocaleTimeString()}] 🚪 [USER LOGOUT] User #${userId} gửi thông báo đăng xuất tài khoản -> Đóng tất cả tab/kết nối.`);
+                    const sockets = userConnections.get(userId);
+                    const logoutPayload = JSON.stringify({
+                        type: 'kicked',
+                        reason: 'user_logout',
+                        message: 'Tài khoản của bạn đã đăng xuất khỏi hệ thống.',
+                        timestamp: new Date().toISOString()
+                    });
+
+                    if (sockets && sockets.size > 0) {
+                        for (const s of Array.from(sockets)) {
+                            s.isKicked = true;
+                            if (s.readyState === 1 /* WebSocket.OPEN */) {
+                                try { s.send(logoutPayload); } catch (e) {}
+                            }
+                            try { s.close(4001, 'User logged out'); } catch (e) {}
+                        }
+                    }
+
+                    userConnections.delete(userId);
+                    userInfoCache.delete(userId);
+
+                    if (pendingDisconnectTimers.has(userId)) {
+                        clearTimeout(pendingDisconnectTimers.get(userId));
+                        pendingDisconnectTimers.delete(userId);
+                    }
+
+                    broadcastOnlineUsers(io);
+
+                    const { tag: lgTag, rawId: lgRawId } = parseUserTag(userId);
+                    if (lgTag) {
+                        const wsData = connections.get(ws);
+                        await dispatchTagCallback(lgTag, 'disconnect', {
+                            user_id: userId,
+                            raw_id: lgRawId,
+                            page: data.page || (wsData ? wsData.page : '/'),
+                            page_param: data.page_param || (wsData ? wsData.pageParam : ''),
+                            full_page: data.full_page || (wsData ? wsData.fullPage : '/'),
+                            active_tabs: 0,
+                            reason: 'logout',
+                            disconnected_at: new Date().toISOString()
+                        }, lgRawId, internalSecret);
+                    }
                 }
             } catch (err) {
                 // Bỏ qua message không hợp lệ
