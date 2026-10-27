@@ -192,6 +192,10 @@ function initWebSocket(server, io, config) {
                     }
 
                     if (data.type === 'activity') {
+                        const wsData = connections.get(ws);
+                        const curPage = wsData ? (wsData.fullPage || wsData.page || '/') : '/';
+                        console.log(`[${new Date().toLocaleTimeString()}] ⚡ [ACTIVITY] User #${userId} tương tác tại: "${curPage}"`);
+
                         // Phát thông báo user_activity tức thì cho toàn bộ các client / dashboard
                         const actPayload = JSON.stringify({
                             type: 'user_activity',
