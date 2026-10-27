@@ -11,8 +11,56 @@ const { getColorForUser, parseUserTag } = require('../helper/userHelper');
 const { getGraceSecondsForTag } = require('../helper/callbackConfig');
 const { dispatchTagCallback } = require('./webhookDispatcher');
 
+let currentIo = null;
+let currentInternalSecret = '';
+
+/**
+ * Ngắt kết nối 1 user cụ thể (kick)
+ */
+async function kickUser(targetUserId, reason = 'admin_kick', message = 'Phiên làm việc của bạn đã bị ngắt bởi Quản trị viên.') {
+    const sockets = userConnections.get(targetUserId);
+    const kickPayload = JSON.stringify({
+        type: 'kicked',
+        reason: reason,
+        message: message,
+        timestamp: new Date().toISOString()
+    });
+
+    let count = 0;
+    if (sockets && sockets.size > 0) {
+        for (const ws of Array.from(sockets)) {
+            ws.isKicked = true;
+            if (ws.readyState === 1 /* WebSocket.OPEN */) {
+                try { ws.send(kickPayload); } catch (e) {}
+            }
+            try {
+                ws.close(4001, 'Kicked by admin');
+            } catch (e) {}
+            count++;
+        }
+    }
+    return count;
+}
+
+/**
+ * Ngắt kết nối TOÀN BỘ user đang online (Kick tất cả)
+ */
+async function kickAllUsers(reason = 'admin_kick', message = 'Hệ thống đã ngắt toàn bộ phiên kết nối bởi Quản trị viên.', exceptUserId = null) {
+    const allUserIds = Array.from(userConnections.keys());
+    let totalKicked = 0;
+    for (const uid of allUserIds) {
+        if (exceptUserId && String(uid) === String(exceptUserId)) {
+            continue;
+        }
+        totalKicked += await kickUser(uid, reason, message);
+    }
+    return totalKicked;
+}
+
 function initWebSocket(server, io, config) {
     const { appKey, internalSecret } = config;
+    currentIo = io;
+    currentInternalSecret = internalSecret;
     const wss = new WebSocketServer({ noServer: true });
 
     /**
@@ -288,7 +336,8 @@ function initWebSocket(server, io, config) {
                             const pagePath = wsData ? wsData.page : '/';
                             const pageParam = wsData ? wsData.pageParam : '';
                             const fullPageStr = wsData ? wsData.fullPage : pagePath;
-                            console.log(`[DISCONNECT] Gửi callback ngắt kết nối cho User #${userId} (Trang cuối: "${fullPageStr}").`);
+                            const disconnectReason = ws.isKicked ? 'admin_kick' : 'closed';
+                            console.log(`[DISCONNECT] Gửi callback ngắt kết nối cho User #${userId} (Trang cuối: "${fullPageStr}", Lý do: ${disconnectReason}).`);
                             await dispatchTagCallback(disTag, 'disconnect', {
                                 user_id: userId,
                                 raw_id: disRawId,
@@ -296,20 +345,19 @@ function initWebSocket(server, io, config) {
                                 page_param: pageParam,
                                 full_page: fullPageStr,
                                 active_tabs: 0,
-                                reason: 'closed',
+                                reason: disconnectReason,
                                 disconnected_at: new Date().toISOString()
                             }, disRawId, internalSecret);
                         }
                     }
                 };
 
-                if (tagGraceSeconds > 0) {
+                if (ws.isKicked || tagGraceSeconds <= 0) {
+                    performDisconnect();
+                } else {
                     console.log(`[${new Date().toLocaleTimeString()}] ⏳ [GRACE PERIOD] Chờ ${tagGraceSeconds}s (Tag: ${disTag || 'default'}) xem User #${userId} có mở lại trang/F5 không...`);
                     const timer = setTimeout(performDisconnect, tagGraceSeconds * 1000);
                     pendingDisconnectTimers.set(userId, timer);
-                } else {
-                    // Cấu hình GRACE_SECONDS = 0 (ví dụ app SPA/React không cần grace) -> Ngắt kết nối ngay lập tức!
-                    performDisconnect();
                 }
             }
         });
@@ -377,5 +425,7 @@ function initWebSocket(server, io, config) {
 }
 
 module.exports = {
-    initWebSocket
+    initWebSocket,
+    kickUser,
+    kickAllUsers
 };

@@ -129,6 +129,54 @@ function createRoutes(io, config = {}) {
         });
     });
 
+    // Endpoint Kick / Ngắt kết nối người dùng từ Dashboard hoặc Admin
+    router.post('/api/kick', async (req, res) => {
+        const secret = req.headers['x-internal-secret'] || req.body.key;
+        if (secret && secret !== internalSecret) {
+            return res.status(403).json({ error: 'Unauthorized' });
+        }
+
+        const { user_id, kick_all, reason, message, except_user_id } = req.body;
+        const { kickUser, kickAllUsers } = require('./component/websocketHandler');
+
+        try {
+            if (kick_all) {
+                const count = await kickAllUsers(
+                    reason || 'admin_kick',
+                    message || 'Hệ thống đã ngắt toàn bộ phiên kết nối bởi Quản trị viên.',
+                    except_user_id
+                );
+                return res.json({
+                    success: true,
+                    action: 'kick_all',
+                    kicked_sockets: count,
+                    timestamp: new Date().toISOString()
+                });
+            }
+
+            if (!user_id) {
+                return res.status(400).json({ error: 'user_id is required or kick_all must be true' });
+            }
+
+            const count = await kickUser(
+                String(user_id).trim(),
+                reason || 'admin_kick',
+                message || 'Phiên làm việc của bạn đã bị ngắt bởi Quản trị viên.'
+            );
+
+            return res.json({
+                success: true,
+                action: 'kick_user',
+                user_id: user_id,
+                kicked_sockets: count,
+                timestamp: new Date().toISOString()
+            });
+        } catch (err) {
+            console.error('[KICK API ERROR]', err);
+            return res.status(500).json({ error: 'Internal Server Error', message: err.message });
+        }
+    });
+
     return router;
 }
 
