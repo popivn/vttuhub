@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../Node/dental-care/client"
+		},
+		{
+			"path": "../Node/dental-care/server"
+		}
+	],
+	"settings": {}
+}

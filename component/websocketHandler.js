@@ -18,7 +18,21 @@ let currentInternalSecret = '';
  * Ngắt kết nối 1 user cụ thể (kick)
  */
 async function kickUser(targetUserId, reason = 'admin_kick', message = 'Phiên làm việc của bạn đã bị ngắt bởi Quản trị viên.') {
-    const sockets = userConnections.get(targetUserId);
+    let resolvedKey = targetUserId;
+    let sockets = userConnections.get(resolvedKey);
+
+    // Nếu không tìm thấy bằng key trực tiếp, thử tìm theo rawId hoặc thêm tiền tố dental-
+    if (!sockets || sockets.size === 0) {
+        for (const [k, v] of userConnections.entries()) {
+            const { rawId } = parseUserTag(k);
+            if (rawId === String(targetUserId) || k === String(targetUserId) || k === `dental-${targetUserId}` || k === `study-${targetUserId}`) {
+                sockets = v;
+                resolvedKey = k;
+                break;
+            }
+        }
+    }
+
     const kickPayload = JSON.stringify({
         type: 'kicked',
         reason: reason,
@@ -30,12 +44,27 @@ async function kickUser(targetUserId, reason = 'admin_kick', message = 'Phiên l
     if (sockets && sockets.size > 0) {
         for (const ws of Array.from(sockets)) {
             ws.isKicked = true;
-            if (ws.readyState === 1 /* WebSocket.OPEN */) {
+            if (typeof ws.send === 'function' && ws.readyState === 1 /* WebSocket.OPEN */) {
                 try { ws.send(kickPayload); } catch (e) {}
             }
-            try {
-                ws.close(4001, 'Kicked by admin');
-            } catch (e) {}
+            if (typeof ws.emit === 'function') {
+                try {
+                    ws.emit('FORCE_LOGOUT', {
+                        message: message,
+                        reason: reason,
+                        timestamp: new Date().toISOString()
+                    });
+                    ws.emit('kicked', {
+                        reason: reason,
+                        message: message,
+                        timestamp: new Date().toISOString()
+                    });
+                } catch (e) {}
+            }
+            setTimeout(() => {
+                try { if (typeof ws.close === 'function') ws.close(4001, 'Kicked by admin'); } catch (e) {}
+                try { if (typeof ws.disconnect === 'function') ws.disconnect(true); } catch (e) {}
+            }, 100);
             count++;
         }
     }
@@ -457,6 +486,9 @@ function initWebSocket(server, io, config) {
     // Heartbeat 30s dọn dead socket
     const heartbeatTimer = setInterval(() => {
         for (const [ws, data] of connections.entries()) {
+            if (ws.isSocketIO) {
+                continue;
+            }
             if (ws.isAlive === false) {
                 console.log(`[HEARTBEAT CLEANUP] Dọn dẹp dead socket #${data.socketId} của User #${data.userId}`);
                 ws.terminate();
@@ -468,6 +500,295 @@ function initWebSocket(server, io, config) {
             } catch (e) {}
         }
     }, 30000);
+
+    // ==========================================
+    // Khởi tạo Socket.IO Handler (Client Dental Care, v.v.)
+    // ==========================================
+    if (io) {
+        io.on('connection', (socket) => {
+            const auth = socket.handshake.auth || {};
+            const query = socket.handshake.query || {};
+
+            const rawUid = auth.userId || query.userId;
+            if (!rawUid) {
+                console.warn(`[Socket.IO REJECTED] Thiếu userId từ kết nối Socket.IO: ${socket.id}`);
+                return socket.disconnect(true);
+            }
+
+            let { tag, rawId } = parseUserTag(rawUid);
+            if (!tag) {
+                tag = auth.tag || query.tag || 'dental';
+            }
+            const fullUserId = `${tag}-${rawId}`;
+            const socketId = getNextSocketId();
+            socket.isAlive = true;
+            socket.isSocketIO = true;
+
+            const currentPage = auth.page || query.page || '/';
+            const currentParam = auth.pageParam || query.pageParam || '';
+            const fullPage = auth.fullPage || (currentPage + currentParam);
+
+            connections.set(socket, {
+                socketId,
+                userId: fullUserId,
+                connectedAt: new Date(),
+                ip: socket.handshake.address,
+                page: currentPage,
+                pageParam: currentParam,
+                fullPage: fullPage
+            });
+
+            const isFirstTab = !userConnections.has(fullUserId) || userConnections.get(fullUserId).size === 0;
+
+            if (!userConnections.has(fullUserId)) {
+                userConnections.set(fullUserId, new Set());
+            }
+            userConnections.get(fullUserId).add(socket);
+
+            if (pendingDisconnectTimers.has(fullUserId)) {
+                clearTimeout(pendingDisconnectTimers.get(fullUserId));
+                pendingDisconnectTimers.delete(fullUserId);
+                console.log(`[${new Date().toLocaleTimeString()}] 🔄 [RELOAD/F5 Socket.IO] User #${fullUserId} tải lại trang - đã hủy timer disconnect.`);
+            }
+
+            const existing = userInfoCache.get(fullUserId);
+            const name = (auth.name || query.name || (existing ? existing.name : `User #${rawId}`)).trim();
+            const initial = (name.charAt(0) || 'U').toUpperCase();
+            const color = getColorForUser(fullUserId);
+
+            const sessionData = {
+                id: fullUserId,
+                tag: tag,
+                raw_id: rawId,
+                name: name,
+                username: auth.username || query.username || (existing ? existing.username : `${rawId}`),
+                email: auth.email || query.email || (existing ? existing.email : ''),
+                role: auth.role || query.role || (existing ? existing.role : (auth.isStudent ? 'Sinh Viên' : 'Người Dùng')),
+                isStudent: Boolean(auth.isStudent === true || auth.isStudent === 'true'),
+                avatar: auth.avatar || auth.avater || query.avatar || query.avater || (existing ? existing.avatar : ''),
+                avater: auth.avatar || auth.avater || query.avatar || query.avater || (existing ? existing.avater : ''),
+                frame: auth.frame || query.frame || (existing ? existing.frame : ''),
+                initial: initial,
+                color: color,
+                page: currentPage,
+                page_param: currentParam,
+                full_page: fullPage,
+                connected_at: existing?.connected_at || new Date().toISOString(),
+                last_active_at: new Date().toISOString()
+            };
+            userInfoCache.set(fullUserId, sessionData);
+
+            const activeTabsCount = userConnections.get(fullUserId).size;
+            console.log(`[${new Date().toLocaleTimeString()}] 🟢 [CONNECT Socket.IO] User #${fullUserId} ("${name}") kết nối thành công (Tab mở: ${activeTabsCount}, Socket ID: ${socket.id})`);
+
+            socket.join(`user_${fullUserId}`);
+            socket.join(`user_${rawId}`);
+
+            if (isFirstTab && tag) {
+                dispatchTagCallback(tag, 'register', {
+                    user_id: fullUserId,
+                    raw_id: rawId,
+                    name: sessionData.name,
+                    username: sessionData.username,
+                    email: sessionData.email,
+                    role: sessionData.role,
+                    isStudent: sessionData.isStudent,
+                    avatar: sessionData.avatar,
+                    frame: sessionData.frame,
+                    page: currentPage,
+                    page_param: currentParam,
+                    full_page: fullPage,
+                    active_tabs: activeTabsCount,
+                    ip: socket.handshake.address,
+                    connected_at: new Date().toISOString()
+                }, rawId, internalSecret);
+            }
+
+            // Gửi xác nhận kết nối về client
+            socket.emit('connected', {
+                type: 'connected',
+                user_id: fullUserId,
+                active_tabs: activeTabsCount,
+                timestamp: new Date().toISOString()
+            });
+
+            // Đồng bộ cho các tab khác của user
+            notifyUserTabsCount(fullUserId, activeTabsCount);
+
+            // Broadcast user registered tới toàn bộ Socket.IO clients
+            io.emit('user_registered', {
+                userId: Number(rawId) || rawId,
+                name: sessionData.name,
+                username: sessionData.username,
+                avatar: sessionData.avatar,
+                frame: sessionData.frame,
+                timestamp: new Date().toISOString()
+            });
+
+            broadcastOnlineUsers(io);
+
+            // 1. Nhận sự kiện register_user từ client
+            socket.on('register_user', (data) => {
+                if (data) {
+                    const uInfo = userInfoCache.get(fullUserId);
+                    if (uInfo) {
+                        if (data.name) uInfo.name = data.name;
+                        if (data.username) uInfo.username = data.username;
+                        if (data.email) uInfo.email = data.email;
+                        if (data.role) uInfo.role = data.role;
+                        if (data.isStudent !== undefined) uInfo.isStudent = Boolean(data.isStudent);
+                        if (data.avatar || data.avater) {
+                            uInfo.avatar = data.avatar || data.avater;
+                            uInfo.avater = uInfo.avatar;
+                        }
+                        if (data.frame !== undefined) uInfo.frame = data.frame;
+                    }
+                    io.emit('user_registered', {
+                        userId: Number(rawId) || rawId,
+                        name: data.name || sessionData.name,
+                        username: data.username || sessionData.username,
+                        avatar: data.avatar || data.avater || sessionData.avatar,
+                        frame: data.frame !== undefined ? data.frame : sessionData.frame,
+                        timestamp: new Date().toISOString()
+                    });
+                    broadcastOnlineUsers(io);
+                }
+            });
+
+            // 2. Nhận sự kiện update_avatar_frame
+            socket.on('update_avatar_frame', (data) => {
+                const targetRawId = data?.userId ? String(data.userId) : rawId;
+                const targetFullId = `${tag}-${targetRawId}`;
+                const uInfo = userInfoCache.get(targetFullId);
+                const nextAvatar = data?.avatar || data?.avater || '';
+                const nextFrame = data?.frame !== undefined ? data.frame : '';
+
+                if (uInfo) {
+                    uInfo.avatar = nextAvatar;
+                    uInfo.avater = nextAvatar;
+                    uInfo.frame = nextFrame;
+                }
+
+                io.emit('avatar_frame_updated', {
+                    userId: Number(targetRawId) || targetRawId,
+                    avatar: nextAvatar,
+                    avater: nextAvatar,
+                    frame: nextFrame,
+                    timestamp: new Date().toISOString()
+                });
+
+                broadcastOnlineUsers(io);
+            });
+
+            // 3. Heartbeat / ping
+            socket.on('heartbeat', () => {
+                const uInfo = userInfoCache.get(fullUserId);
+                if (uInfo) uInfo.last_active_at = new Date().toISOString();
+            });
+
+            socket.on('ping', () => {
+                const currentTabs = userConnections.get(fullUserId)?.size || 1;
+                socket.emit('pong', {
+                    type: 'pong',
+                    user_id: fullUserId,
+                    active_tabs: currentTabs,
+                    timestamp: new Date().toISOString()
+                });
+            });
+
+            // 4. Logout
+            socket.on('user_logout', async () => {
+                console.log(`[${new Date().toLocaleTimeString()}] 🚪 [LOGOUT Socket.IO] User #${fullUserId} đăng xuất`);
+                io.emit('user_logout', {
+                    userId: Number(rawId) || rawId,
+                    name: sessionData.name,
+                    timestamp: new Date().toISOString()
+                });
+
+                const sockets = userConnections.get(fullUserId);
+                if (sockets) {
+                    for (const s of Array.from(sockets)) {
+                        try { s.disconnect(true); } catch (e) {}
+                    }
+                }
+                userConnections.delete(fullUserId);
+                userInfoCache.delete(fullUserId);
+
+                if (pendingDisconnectTimers.has(fullUserId)) {
+                    clearTimeout(pendingDisconnectTimers.get(fullUserId));
+                    pendingDisconnectTimers.delete(fullUserId);
+                }
+
+                broadcastOnlineUsers(io);
+
+                if (tag) {
+                    await dispatchTagCallback(tag, 'disconnect', {
+                        user_id: fullUserId,
+                        raw_id: rawId,
+                        reason: 'logout',
+                        disconnected_at: new Date().toISOString()
+                    }, rawId, internalSecret);
+                }
+            });
+
+            // 5. Disconnect (đóng tab)
+            socket.on('disconnect', () => {
+                connections.delete(socket);
+                const userSockets = userConnections.get(fullUserId);
+                if (userSockets) {
+                    userSockets.delete(socket);
+                    const remainingTabs = userSockets.size;
+                    console.log(`[${new Date().toLocaleTimeString()}] 🟡 [TAB CLOSED Socket.IO] Đóng tab User #${fullUserId} (Còn ${remainingTabs} tab khác)`);
+
+                    if (remainingTabs > 0) {
+                        notifyUserTabsCount(fullUserId, remainingTabs);
+                        return;
+                    }
+
+                    userConnections.delete(fullUserId);
+
+                    if (pendingDisconnectTimers.has(fullUserId)) {
+                        clearTimeout(pendingDisconnectTimers.get(fullUserId));
+                        pendingDisconnectTimers.delete(fullUserId);
+                    }
+
+                    const tagGraceSeconds = getGraceSecondsForTag(tag);
+                    const performDisconnect = async () => {
+                        pendingDisconnectTimers.delete(fullUserId);
+                        if (!userConnections.has(fullUserId)) {
+                            console.log(`[${new Date().toLocaleTimeString()}] 🔴 [USER OFFLINE Socket.IO] User #${fullUserId} đã đóng toàn bộ tab.`);
+                            userInfoCache.delete(fullUserId);
+
+                            io.emit('user_disconnected', {
+                                userId: Number(rawId) || rawId,
+                                name: sessionData.name,
+                                timestamp: new Date().toISOString()
+                            });
+
+                            broadcastOnlineUsers(io);
+
+                            if (tag) {
+                                await dispatchTagCallback(tag, 'disconnect', {
+                                    user_id: fullUserId,
+                                    raw_id: rawId,
+                                    reason: socket.isKicked ? 'admin_kick' : 'closed',
+                                    disconnected_at: new Date().toISOString()
+                                }, rawId, internalSecret);
+                            }
+                        }
+                    };
+
+                    if (socket.isKicked || tagGraceSeconds <= 0) {
+                        performDisconnect();
+                    } else {
+                        console.log(`[${new Date().toLocaleTimeString()}] ⏳ [GRACE PERIOD Socket.IO] Chờ ${tagGraceSeconds}s (Tag: ${tag}) xem User #${fullUserId} có mở lại trang/F5 không...`);
+                        const timer = setTimeout(performDisconnect, tagGraceSeconds * 1000);
+                        pendingDisconnectTimers.set(fullUserId, timer);
+                    }
+                }
+            });
+        });
+    }
 
     return { wss, heartbeatTimer };
 }

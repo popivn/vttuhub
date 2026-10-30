@@ -123,6 +123,20 @@ function createRoutes(io, config = {}) {
             }
         }
 
+        // Nếu là sự kiện cập nhật avatar/frame thì đồng bộ vào cache và broadcast online list
+        if (type === 'avatar_frame_updated' && payload && payload.userId) {
+            const { userInfoCache, broadcastOnlineUsers } = require('./component/connectionState');
+            for (const [k, uInfo] of userInfoCache.entries()) {
+                const { rawId } = parseUserTag(k);
+                if (rawId === String(payload.userId) || k === String(payload.userId) || k === `dental-${payload.userId}`) {
+                    uInfo.avatar = payload.avatar || payload.avater || uInfo.avatar;
+                    uInfo.avater = uInfo.avatar;
+                    uInfo.frame = payload.frame !== undefined ? payload.frame : uInfo.frame;
+                }
+            }
+            broadcastOnlineUsers(io);
+        }
+
         return res.json({
             success: true,
             sent_clients: sentCount

@@ -6,7 +6,7 @@ let nextSocketId = 1;
 const connections = new Map();
 // Map: userId -> Set<ws connection> (hỗ trợ 1 học viên mở nhiều tab cùng lúc)
 const userConnections = new Map();
-// Map: userId -> { id, tag, raw_id, name, username, initial, color, page, page_param, full_page, connected_at }
+// Map: userId -> { id, tag, raw_id, name, username, initial, color, page, page_param, full_page, connected_at, avatar, frame, role, isStudent, email }
 const userInfoCache = new Map();
 // Map: userId -> Timeout handle (Grace period chờ 8s khi tắt hết tab)
 const pendingDisconnectTimers = new Map();
@@ -46,21 +46,32 @@ function getOnlineUsersList(filterTag = null) {
 
         const lastActiveTime = info.last_active_at ? new Date(info.last_active_at).getTime() : (info.connected_at ? new Date(info.connected_at).getTime() : Date.now());
         const inactiveSeconds = Math.max(0, Math.floor((Date.now() - lastActiveTime) / 1000));
+        const numId = Number(info.raw_id);
+        const resolvedUserId = isNaN(numId) ? (info.raw_id || info.id) : numId;
 
         result.push({
             id: info.id,
+            userId: resolvedUserId,
             tag: info.tag || tag,
             raw_id: info.raw_id || rawId,
             name: info.name,
             username: info.username,
-            initial: info.initial,
-            color: info.color,
+            email: info.email || '',
+            role: info.role || (info.isStudent ? 'Sinh Viên' : 'Người Dùng'),
+            isStudent: Boolean(info.isStudent),
+            avatar: info.avatar || info.avater || '',
+            avater: info.avatar || info.avater || '',
+            frame: info.frame || '',
+            initial: info.initial || 'U',
+            color: info.color || getColorForUser(userId),
             page: info.page || '/',
             page_param: info.page_param || '',
             full_page: info.full_page || (info.page || '/'),
             active_tabs: sockets ? sockets.size : 1,
             connected_at: info.connected_at || null,
+            loginAt: info.connected_at || null,
             last_active_at: info.last_active_at || info.connected_at || new Date().toISOString(),
+            lastActive: info.last_active_at || info.connected_at || new Date().toISOString(),
             inactive_seconds: inactiveSeconds
         });
     }
@@ -69,23 +80,31 @@ function getOnlineUsersList(filterTag = null) {
 }
 
 /**
- * Hàm phát danh sách học viên đang online tới toàn bộ client
+ * Hàm phát danh sách học viên đang online tới toàn bộ client (Hỗ trợ cả Native WS và Socket.IO)
  */
 function broadcastOnlineUsers(io = null) {
     const usersData = getOnlineUsersList();
+    const studentsCount = usersData.filter((u) => u.isStudent).length;
+    const staffCount = usersData.filter((u) => !u.isStudent).length;
 
-    const payload = JSON.stringify({
-        type: 'online_users_update',
+    const payloadObj = {
         total: usersData.length,
+        staffCount,
+        studentsCount,
         users: usersData,
         timestamp: new Date().toISOString()
+    };
+
+    const payloadStr = JSON.stringify({
+        type: 'online_users_update',
+        ...payloadObj
     });
 
     // 1. Gửi tới tất cả native WebSocket clients
     for (const [clientWs] of connections.entries()) {
-        if (clientWs.readyState === WebSocket.OPEN) {
+        if (clientWs && clientWs.readyState === WebSocket.OPEN && typeof clientWs.send === 'function') {
             try {
-                clientWs.send(payload);
+                clientWs.send(payloadStr);
             } catch (err) {
                 console.error(`[WS SEND ERROR] Socket #${connections.get(clientWs)?.socketId}:`, err.message);
             }
@@ -94,11 +113,8 @@ function broadcastOnlineUsers(io = null) {
 
     // 2. Gửi tới Socket.IO clients (nếu có)
     if (io) {
-        io.emit('online_users_update', {
-            total: usersData.length,
-            users: usersData,
-            timestamp: new Date().toISOString()
-        });
+        io.emit('online_users_updated', payloadObj);
+        io.emit('online_users_update', payloadObj);
     }
 }
 

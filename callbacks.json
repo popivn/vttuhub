@@ -1,8 +1,14 @@
 {
   "study": {
     "STUDY_TAG": "study",
-    // "STUDY_CALLBACK": "http://127.0.0.1:8000/wss/callback",
     "STUDY_CALLBACK": "https://study.vttu.edu.vn/wss/callback",
+    // "STUDY_CALLBACK": "http://127.0.0.1:8000/wss/callback",
     "GRACE_SECONDS": 8
+  },
+  "dental": {
+    "tag": "dental",
+    "callback": "https://ctth.vttu.edu.vn/monitor/callback",
+    // "callback": "http://localhost:5323/monitor/callback",
+    "graceSeconds": 5
   }
 }
