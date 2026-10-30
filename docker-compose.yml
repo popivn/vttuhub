@@ -1,0 +1,21 @@
+services:
+  realtime-hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vttu-realtime-hub:latest
+    container_name: vttu-realtime-hub
+    restart: always
+    ports:
+      # Mở public cổng 6001 ra ngoài Internet (0.0.0.0)
+      - "0.0.0.0:6001:6001"
+    environment:
+      - NODE_ENV=production
+      - PORT=6001
+      - APP_KEY=vttu_key_2026
+      - INTERNAL_SECRET=13467902
+      - CORS_ORIGIN=*
+    volumes:
+      # Mount callbacks.json để có thể cập nhật callback URL mà không cần build lại image
+      - ./callbacks.json:/app/callbacks.json:ro
+
